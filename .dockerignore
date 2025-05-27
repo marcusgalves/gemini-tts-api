@@ -1,0 +1,30 @@
+# Ambientes Virtuais
+venv/
+.venv/
+env/
+.env/
+
+# Cache e arquivos compilados do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Arquivos de IDE e Sistema Operacional
+.vscode/
+.idea/
+.DS_Store
+*.bak
+
+# Arquivos do Git
+.git/
+.gitignore
+
+# Outros arquivos de build ou temporários
+*.log
+*.tmp
+*.swp
+
+# Se você tiver um banco de dados local para testes que não deve ir para a imagem
+*.db
+*.sqlite3
