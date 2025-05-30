@@ -1,7 +1,8 @@
 # main.py
 
+import base64 # Adicionado
 import io
-import mimetypes
+import mimetypes # Embora não usado diretamente no novo endpoint, mantido por consistência
 import struct # Para a função convert_to_wav
 
 from fastapi import FastAPI, HTTPException, Body, Query
@@ -37,11 +38,14 @@ def parse_audio_mime_type(mime_type: str) -> dict[str, int | None]:
                 rate = int(rate_str)
             except (ValueError, IndexError):
                 pass  # Mantém o valor padrão se a extração falhar
-        elif param.lower().startswith("audio/l"):
-            type_part = param.split('/', 1)[-1]
-            if type_part.lower().startswith("l"):
+        # Modificado para pegar o Lxx da parte principal do mime_type também
+        elif param.lower().startswith("audio/l"): 
+            type_part_potential = param.split('/', 1)[-1] # Ex: L16 ou L16;codec=pcm
+            # Pega somente a parte antes de um possível ';'
+            actual_type_part = type_part_potential.split(';',1)[0] # Ex: L16
+            if actual_type_part.lower().startswith("l"):
                 try:
-                    bits_str = type_part[1:]
+                    bits_str = actual_type_part[1:]
                     bits_per_sample = int(bits_str)
                 except (ValueError, IndexError):
                     pass
@@ -60,8 +64,13 @@ def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
         Um objeto bytes representando o arquivo WAV completo (cabeçalho + dados).
     """
     parameters = parse_audio_mime_type(mime_type)
-    bits_per_sample = parameters.get("bits_per_sample", 16)
-    sample_rate = parameters.get("rate", 24000)
+    # Garante que temos valores padrão se não forem encontrados no parse
+    bits_per_sample = parameters.get("bits_per_sample")
+    if bits_per_sample is None: bits_per_sample = 16 
+
+    sample_rate = parameters.get("rate")
+    if sample_rate is None: sample_rate = 24000
+    
     num_channels = 1  # Áudio mono
     data_size = len(audio_data)
     bytes_per_sample = bits_per_sample // 8
@@ -137,25 +146,30 @@ def generate_audio_from_gemini(
             part = chunk.candidates[0].content.parts[0]
             if part.inline_data and part.inline_data.data:
                 raw_audio_chunks.append(part.inline_data.data)
-                if source_mime_type is None:
+                if source_mime_type is None: # Captura o mime_type do primeiro chunk com dados
                     source_mime_type = part.inline_data.mime_type
     except Exception as e:
         print(f"Erro durante a chamada à API Gemini: {e}")
         raise HTTPException(status_code=502, detail=f"Erro na comunicação com a API Gemini: {e}")
 
-    if not raw_audio_chunks or source_mime_type is None:
+    if not raw_audio_chunks: # Não há chunks de áudio, source_mime_type pode ser None
+        print("Nenhum chunk de áudio recebido do Gemini.")
         return None
+    
+    # Se source_mime_type não foi definido, mas temos chunks, precisamos de um fallback ou erro.
+    # Para este exemplo, vamos assumir um mime_type padrão se não for pego, embora seja melhor garantir que ele seja definido.
+    if source_mime_type is None and raw_audio_chunks:
+        print("AVISO: source_mime_type não foi detectado, usando padrão para conversão.")
+        source_mime_type = "audio/L16;rate=24000" # Ou levante um erro
 
     concatenated_raw_audio = b"".join(raw_audio_chunks)
     
-    # A API Gemini TTS geralmente retorna audio/wav.
-    # Se o mime_type da fonte já for WAV, a concatenação direta dos chunks de dados deve ser suficiente.
     if source_mime_type and source_mime_type.startswith("audio/wav"):
         return concatenated_raw_audio
-    elif source_mime_type: # Se for outro formato como audio/L16 que parse_audio_mime_type entende
+    elif source_mime_type: 
         print(f"Convertendo de {source_mime_type} para WAV.")
         return convert_to_wav(concatenated_raw_audio, source_mime_type)
-    else: # Caso source_mime_type não tenha sido definido (improvável se raw_audio_chunks não estiver vazio)
+    else: 
         print("Mime type da fonte desconhecido, não foi possível converter para WAV.")
         return None
 
@@ -163,8 +177,8 @@ def generate_audio_from_gemini(
 # --- Configuração da API FastAPI ---
 app = FastAPI(
     title="API de Geração de Áudio com Gemini",
-    description="Esta API permite gerar áudio a partir de texto usando o modelo Gemini TTS. A chave da API deve ser passada como um query parameter 'key'.",
-    version="1.0.0"
+    description="Esta API permite gerar áudio a partir de texto usando o modelo Gemini TTS e converter áudio Base64 para WAV.",
+    version="1.1.0" # Versão incrementada
 )
 
 VOICES = [
@@ -204,11 +218,17 @@ class GenerateBodyParams(BaseModel):
             raise ValueError(f"A voz deve ser uma das seguintes: {allowed_voices}")
         return v_value
 
+# Pydantic Model para o novo endpoint /convert
+class ConvertAudioBody(BaseModel):
+    base64_audio: str = Body(..., description="String Base64 do áudio a ser convertido.")
+    mime_type: str = Body(..., description="MIME type original do áudio (ex: 'audio/L16;rate=24000').", example="audio/L16;rate=24000")
+
+
 # Endpoint modificado para aceitar API key como Query Parameter
 @app.post("/generate-audio", tags=["Audio Generation"])
 async def generate_audio_endpoint(
-    body_params: GenerateBodyParams, # <--- TROCADO: Parâmetro do corpo da requisição primeiro
-    api_key_from_query: str = Query(..., alias="key", description="Sua chave da API Gemini passada como query parameter 'key'.") # <--- TROCADO: Parâmetro de query depois
+    body_params: GenerateBodyParams, 
+    api_key_from_query: str = Query(..., alias="key", description="Sua chave da API Gemini passada como query parameter 'key'.") 
 ):
     """
     Gera áudio a partir do texto fornecido usando a voz e configurações especificadas.
@@ -225,27 +245,55 @@ async def generate_audio_endpoint(
             model_name=body_params.model,
         )
     except HTTPException:
-        raise # Re-lança HTTPExceptions de generate_audio_from_gemini
+        raise 
     except Exception as e:
         print(f"Erro inesperado ao gerar áudio: {e}")
         raise HTTPException(status_code=500, detail=f"Erro interno ao processar a solicitação: {e}")
 
     if not audio_bytes:
         raise HTTPException(
-            status_code=500, detail="Nenhum dado de áudio foi retornado pelo serviço Gemini."
+            status_code=500, detail="Nenhum dado de áudio foi retornado pelo serviço Gemini ou a conversão falhou."
         )
 
     return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
 
+# NOVO ENDPOINT /convert
+@app.post("/convert", tags=["Audio Conversion"])
+async def convert_audio_endpoint(payload: ConvertAudioBody):
+    """
+    Recebe áudio em Base64 e seu MIME type original, e o converte para formato WAV.
+    """
+    try:
+        raw_audio_data = base64.b64decode(payload.base64_audio)
+    except base64.binascii.Error as e: # Erro específico para base64 inválido
+        raise HTTPException(status_code=400, detail=f"Formato Base64 inválido: {e}")
+    except Exception as e: # Outros erros de decodificação
+        raise HTTPException(status_code=400, detail=f"Erro ao decodificar Base64: {e}")
+
+    if not raw_audio_data:
+        raise HTTPException(status_code=400, detail="Dados de áudio em Base64 resultaram em bytes vazios.")
+
+    try:
+        wav_audio_bytes = convert_to_wav(raw_audio_data, payload.mime_type)
+    except Exception as e:
+        print(f"Erro durante a conversão para WAV: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao converter áudio para WAV: {e}")
+
+    if not wav_audio_bytes: # Checagem extra, embora convert_to_wav deva sempre retornar bytes ou falhar
+        raise HTTPException(
+            status_code=500, detail="Conversão para WAV não retornou dados."
+        )
+
+    return StreamingResponse(io.BytesIO(wav_audio_bytes), media_type="audio/wav")
+
+
 # Para rodar localmente com Uvicorn:
 # uvicorn main:app --reload
 #
-# Exemplo de URL para teste (substitua SUA_CHAVE_API_GEMINI):
-# POST http://127.0.0.1:8000/generate-audio?key=SUA_CHAVE_API_GEMINI
+# Exemplo de requisição para /convert:
+# POST http://127.0.0.1:8000/convert
 # Corpo (Body) da requisição (JSON):
 # {
-#   "text": "Olá, este é um teste.",
-#   "voice": "Zephyr",
-#   "temperature": 1.0,
-#   "model": "gemini-2.5-flash-preview-tts"
+#   "base64_audio": "SUQzBAAAAAAA...", // Sua string base64 aqui (este é um exemplo de MP3, use o seu L16)
+#   "mime_type": "audio/L16;rate=24000"
 # }
