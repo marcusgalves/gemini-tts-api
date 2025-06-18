@@ -1,3 +1,5 @@
+# main.py
+
 import base64
 import io
 import mimetypes
@@ -64,12 +66,12 @@ def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
     return header + audio_data
 
 
-# --- Lógica de Geração de Áudio com Gemini (Modificada para Safety Settings) ---
+# --- Lógica de Geração de Áudio com Gemini (Corrigida) ---
 def generate_audio_from_gemini(
-    api_key: str, text: str, voice: str, temperature: float, model_name: str, proxy_url: str | None = None
+    api_key: str, text: str, voice: str, language_code: str | None, temperature: float, model_name: str, proxy_url: str | None = None
 ) -> bytes | None:
     """
-    Gera áudio usando a API Gemini. Utiliza um proxy se a URL for fornecida e desativa as políticas de segurança.
+    Gera áudio usando a API Gemini. Utiliza um proxy e language_code se fornecidos.
     """
     original_https_proxy = os.environ.get('HTTPS_PROXY')
     original_http_proxy = os.environ.get('HTTP_PROXY')
@@ -88,17 +90,7 @@ def generate_audio_from_gemini(
         contents = [
             types.Content(role="user", parts=[types.Part.from_text(text=text)]),
         ]
-        generate_content_config = types.GenerateContentConfig(
-            temperature=temperature,
-            response_modalities=["audio"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
-                )
-            ),
-        )
 
-        # **NOVA ALTERAÇÃO: Define as políticas de segurança para serem desativadas por padrão**
         safety_settings = [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -107,6 +99,24 @@ def generate_audio_from_gemini(
             {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
         ]
 
+        # **NOVA ALTERAÇÃO: Constrói o SpeechConfig dinamicamente**
+        speech_config_args = {
+            "voice_config": types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
+            )
+        }
+        if language_code:
+            speech_config_args["language_code"] = language_code
+        
+        speech_config = types.SpeechConfig(**speech_config_args)
+
+        generate_content_config = types.GenerateContentConfig(
+            temperature=temperature,
+            response_modalities=["audio"],
+            speech_config=speech_config,
+            safety_settings=safety_settings
+        )
+
         raw_audio_chunks = []
         source_mime_type = None
 
@@ -114,7 +124,6 @@ def generate_audio_from_gemini(
             model=model_name,
             contents=contents,
             config=generate_content_config,
-            safety_settings=safety_settings, # Parâmetro adicionado
         ):
             if (
                 chunk.candidates is None
@@ -170,7 +179,7 @@ def generate_audio_from_gemini(
 app = FastAPI(
     title="API de Geração de Áudio com Gemini",
     description="Esta API permite gerar áudio a partir de texto usando o modelo Gemini TTS e converter áudio Base64 para WAV.",
-    version="1.3.0"  # Versão incrementada
+    version="1.5.0"  # Versão incrementada
 )
 
 VOICES = [
@@ -196,9 +205,11 @@ async def get_voices_endpoint():
     """Retorna a lista de vozes disponíveis."""
     return VOICES
 
+# **NOVA ALTERAÇÃO: Adicionado language_code**
 class GenerateBodyParams(BaseModel):
     text: str = Body(..., description="O texto a ser convertido em áudio.", example="Olá! Esse aqui é um teste de geração de voz em português brasileiro!")
     voice: str = Body(..., description="O nome da voz a ser usada.", example="Zephyr")
+    language_code: str | None = Body(None, description="Código de idioma opcional para a geração (ex: 'pt-BR', 'en-US').", example="pt-BR")
     temperature: float = Body(1.0, description="A temperatura para a geração (controla a aleatoriedade).", ge=0.0, le=2.0)
     model: str = Body("gemini-2.5-flash-preview-tts", description="O modelo Gemini TTS a ser usado.")
 
@@ -236,6 +247,7 @@ async def generate_audio_endpoint(
             api_key=api_key_from_query,
             text=body_params.text,
             voice=body_params.voice,
+            language_code=body_params.language_code, # Parâmetro adicionado
             temperature=body_params.temperature,
             model_name=body_params.model,
             proxy_url=proxy_url
