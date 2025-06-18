@@ -89,28 +89,13 @@ def generate_audio_from_gemini(
             types.Content(role="user", parts=[types.Part.from_text(text=text)]),
         ]
 
-        # **CORREÇÃO 1: Usar os safety_settings como objetos types.SafetySetting**
+        # **CORREÇÃO 1: Usar dicionários para safety_settings (formato mais compatível)**
         safety_settings = [
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
-                threshold=types.HarmBlockThreshold.BLOCK_NONE
-            ),
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
         ]
 
         # **CORREÇÃO 2: Constrói o SpeechConfig dinamicamente**
@@ -124,10 +109,10 @@ def generate_audio_from_gemini(
         
         speech_config = types.SpeechConfig(**speech_config_args)
 
-        # **CORREÇÃO 3: Usar ResponseModality enum**
+        # **CORREÇÃO 3: Usar string para response_modalities**
         generate_content_config = types.GenerateContentConfig(
             temperature=temperature,
-            response_modalities=[types.ResponseModality.AUDIO],
+            response_modalities=["AUDIO"],
             speech_config=speech_config,
             safety_settings=safety_settings
         )
