@@ -2,10 +2,10 @@ import base64
 import io
 import mimetypes
 import struct
-import os  # Adicionado
-import httpx  # Adicionado para capturar erros de proxy
+import os
+import httpx
 
-from fastapi import FastAPI, HTTPException, Body, Query, Header  # Header foi adicionado
+from fastapi import FastAPI, HTTPException, Body, Query, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -64,19 +64,17 @@ def convert_to_wav(audio_data: bytes, mime_type: str) -> bytes:
     return header + audio_data
 
 
-# --- Lógica de Geração de Áudio com Gemini (Modificada para Proxy) ---
+# --- Lógica de Geração de Áudio com Gemini (Modificada para Safety Settings) ---
 def generate_audio_from_gemini(
     api_key: str, text: str, voice: str, temperature: float, model_name: str, proxy_url: str | None = None
 ) -> bytes | None:
     """
     Gera áudio usando a API Gemini. Utiliza um proxy se a URL for fornecida via header.
+    As configurações de segurança são desativadas por padrão.
     """
-    # Salva as variáveis de ambiente de proxy originais para não interferir com o sistema
     original_https_proxy = os.environ.get('HTTPS_PROXY')
     original_http_proxy = os.environ.get('HTTP_PROXY')
 
-    # Se um proxy_url foi passado (do header), define-o como variável de ambiente
-    # para que a biblioteca http subjacente o utilize para esta requisição.
     if proxy_url:
         os.environ['HTTPS_PROXY'] = proxy_url
         os.environ['HTTP_PROXY'] = proxy_url
@@ -101,181 +99,26 @@ def generate_audio_from_gemini(
             ),
         )
 
+        # Desativa todas as configurações de segurança do Gemini
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+        ]
+
         raw_audio_chunks = []
         source_mime_type = None
 
+        # ATUALIZADO: Adicionado o parâmetro safety_settings na chamada
         for chunk in client.models.generate_content_stream(
             model=model_name,
             contents=contents,
             config=generate_content_config,
+            safety_settings=safety_settings  # Parâmetro adicionado aqui
         ):
             if (
                 chunk.candidates is None
                 or not chunk.candidates[0].content
-                or not chunk.candidates[0].content.parts
-            ):
-                continue
-
-            part = chunk.candidates[0].content.parts[0]
-            if part.inline_data and part.inline_data.data:
-                raw_audio_chunks.append(part.inline_data.data)
-                if source_mime_type is None:
-                    source_mime_type = part.inline_data.mime_type
-
-    except httpx.ProxyError as e:
-        print(f"Falha na conexão com o proxy: {e}")
-        # Retorna um erro 400 específico para falha de proxy
-        raise HTTPException(status_code=400, detail=f"Falha ao conectar ao proxy '{proxy_url}'. Verifique o URL e a disponibilidade do proxy. Erro: {e}")
-    except Exception as e:
-        print(f"Erro durante a chamada à API Gemini: {e}")
-        raise HTTPException(status_code=502, detail=f"Erro na comunicação com a API Gemini: {e}")
-    finally:
-        # Bloco finally para GARANTIR que as variáveis de ambiente originais sejam restauradas
-        # e a configuração do proxy desta requisição não vaze para outras.
-        if original_https_proxy:
-            os.environ['HTTPS_PROXY'] = original_https_proxy
-        elif 'HTTPS_PROXY' in os.environ:
-            del os.environ['HTTPS_PROXY']
-
-        if original_http_proxy:
-            os.environ['HTTP_PROXY'] = original_http_proxy
-        elif 'HTTP_PROXY' in os.environ:
-            del os.environ['HTTP_PROXY']
-
-    if not raw_audio_chunks:
-        print("Nenhum chunk de áudio recebido do Gemini.")
-        return None
-
-    if source_mime_type is None and raw_audio_chunks:
-        print("AVISO: source_mime_type não foi detectado, usando padrão para conversão.")
-        source_mime_type = "audio/L16;rate=24000"
-
-    concatenated_raw_audio = b"".join(raw_audio_chunks)
-
-    if source_mime_type and source_mime_type.startswith("audio/wav"):
-        return concatenated_raw_audio
-    elif source_mime_type:
-        print(f"Convertendo de {source_mime_type} para WAV.")
-        return convert_to_wav(concatenated_raw_audio, source_mime_type)
-    else:
-        print("Mime type da fonte desconhecido, não foi possível converter para WAV.")
-        return None
-
-
-# --- Configuração da API FastAPI ---
-app = FastAPI(
-    title="API de Geração de Áudio com Gemini",
-    description="Esta API permite gerar áudio a partir de texto usando o modelo Gemini TTS e converter áudio Base64 para WAV.",
-    version="1.2.0" 
-)
-
-VOICES = [
-    {"name": "Zephyr", "style": "Bright"}, {"name": "Puck", "style": "Upbeat"},
-    {"name": "Charon", "style": "Informative"}, {"name": "Kore", "style": "Firm"},
-    {"name": "Fenrir", "style": "Excitable"}, {"name": "Leda", "style": "Youthful"},
-    {"name": "Orus", "style": "Firm"}, {"name": "Aoede", "style": "Breezy"},
-    {"name": "Callirrhoe", "style": "Easy-going"}, {"name": "Autonoe", "style": "Bright"},
-    {"name": "Enceladus", "style": "Breathy"}, {"name": "Iapetus", "style": "Clear"},
-    {"name": "Umbriel", "style": "Easy-going"}, {"name": "Algieba", "style": "Smooth"},
-    {"name": "Despina", "style": "Smooth"}, {"name": "Erinome", "style": "Clear"},
-    {"name": "Algenib", "style": "Gravelly"}, {"name": "Rasalgethi", "style": "Informative"},
-    {"name": "Laomedeia", "style": "Upbeat"}, {"name": "Achernar", "style": "Soft"},
-    {"name": "Alnilam", "style": "Firm"}, {"name": "Schedar", "style": "Even"},
-    {"name": "Gacrux", "style": "Mature"}, {"name": "Pulcherrima", "style": "Forward"},
-    {"name": "Achird", "style": "Friendly"}, {"name": "Zubenelgenubi", "style": "Casual"},
-    {"name": "Vindemiatrix", "style": "Gentle"}, {"name": "Sadachbia", "style": "Lively"},
-    {"name": "Sadaltager", "style": "Knowledgeable"}, {"name": "Sulafat", "style": "Warm"},
-]
-
-@app.get("/voices", tags=["Voices"])
-async def get_voices_endpoint():
-    """Retorna a lista de vozes disponíveis."""
-    return VOICES
-
-class GenerateBodyParams(BaseModel):
-    text: str = Body(..., description="O texto a ser convertido em áudio.", example="Olá! Esse aqui é um teste de geração de voz em português brasileiro!")
-    voice: str = Body(..., description="O nome da voz a ser usada.", example="Zephyr")
-    temperature: float = Body(1.0, description="A temperatura para a geração (controla a aleatoriedade).", ge=0.0, le=2.0)
-    model: str = Body("gemini-2.5-flash-preview-tts", description="O modelo Gemini TTS a ser usado.")
-
-    @field_validator("voice")
-    def validate_voice(cls, v_value):
-        allowed_voices = [vox["name"] for vox in VOICES]
-        if v_value not in allowed_voices:
-            raise ValueError(f"A voz deve ser uma das seguintes: {allowed_voices}")
-        return v_value
-
-class ConvertAudioBody(BaseModel):
-    base64_audio: str = Body(..., description="String Base64 do áudio a ser convertido.")
-    mime_type: str = Body(..., description="MIME type original do áudio (ex: 'audio/L16;rate=24000').", example="audio/L16;rate=24000")
-
-
-# Endpoint modificado para ler a proxy_url do header
-@app.post("/generate-audio", tags=["Audio Generation"])
-async def generate_audio_endpoint(
-    body_params: GenerateBodyParams,
-    api_key_from_query: str = Query(..., alias="key", description="Sua chave da API Gemini passada como query parameter 'key'."),
-    proxy_url: str | None = Header(
-        None,
-        description="URL do proxy opcional no formato 'PROTOCOL://USERNAME:PASSWORD@IP:PORT'. Suporta http, https e socks5.",
-        alias="proxy_url" # O alias garante que o header seja 'proxy_url'
-    )
-):
-    """
-    Gera áudio a partir do texto fornecido.
-    A credencial da API Gemini deve ser fornecida via query param 'key'.
-    Pode-se utilizar um proxy para a requisição enviando o header 'proxy_url'.
-    """
-    audio_bytes: bytes | None
-
-    try:
-        audio_bytes = generate_audio_from_gemini(
-            api_key=api_key_from_query,
-            text=body_params.text,
-            voice=body_params.voice,
-            temperature=body_params.temperature,
-            model_name=body_params.model,
-            proxy_url=proxy_url  # Passa o proxy lido do header para a função de geração
-        )
-    except HTTPException:
-        # Repassa exceções HTTP já tratadas (como a de proxy)
-        raise
-    except Exception as e:
-        print(f"Erro inesperado ao gerar áudio: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro interno ao processar a solicitação: {e}")
-
-    if not audio_bytes:
-        raise HTTPException(
-            status_code=500, detail="Nenhum dado de áudio foi retornado pelo serviço Gemini ou a conversão falhou."
-        )
-
-    return StreamingResponse(io.BytesIO(audio_bytes), media_type="audio/wav")
-
-
-@app.post("/convert", tags=["Audio Conversion"])
-async def convert_audio_endpoint(payload: ConvertAudioBody):
-    """
-    Recebe áudio em Base64 e seu MIME type original, e o converte para formato WAV.
-    """
-    try:
-        raw_audio_data = base64.b64decode(payload.base64_audio)
-    except base64.binascii.Error as e:
-        raise HTTPException(status_code=400, detail=f"Formato Base64 inválido: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erro ao decodificar Base64: {e}")
-
-    if not raw_audio_data:
-        raise HTTPException(status_code=400, detail="Dados de áudio em Base64 resultaram em bytes vazios.")
-
-    try:
-        wav_audio_bytes = convert_to_wav(raw_audio_data, payload.mime_type)
-    except Exception as e:
-        print(f"Erro durante a conversão para WAV: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao converter áudio para WAV: {e}")
-
-    if not wav_audio_bytes:
-        raise HTTPException(
-            status_code=500, detail="Conversão para WAV não retornou dados."
-        )
-
-    return StreamingResponse(io.BytesIO(wav_audio_bytes), media_type="audio/wav")
+                or not chunk.candidates[0].
