@@ -27,8 +27,10 @@ The API is designed to be containerized using Docker for easy deployment and sca
 ### 2. Generate Audio
 
 * **Endpoint:** `POST /generate-audio`
-* **Description:** Generates audio from the provided text using the specified voice, model, temperature, and your Gemini API key.
+* **Description:** Generates audio from the provided text using the specified voice, model, temperature, and your Gemini API key. Can optionally route the request through a proxy.
 * **Method:** `POST`
+* **Headers:**
+    * `proxy_url` (string, optional): An optional proxy URL to use for the request to the Gemini API. Must be in the format `PROTOCOL://USERNAME:PASSWORD@IP:PORT`. Supports `http`, `https`, and `socks5`.
 * **Query Parameters:**
     * `key` (string, **required**): Your Google Gemini API key.
 * **Request Body:**
@@ -51,7 +53,7 @@ The API is designed to be containerized using Docker for easy deployment and sca
     * Content-Type: `audio/wav`
     * Body: The binary audio data in WAV format.
 * **Error Responses:**
-    * `400 Bad Request`: Invalid input, such as missing required fields or an invalid voice name.
+    * `400 Bad Request`: Invalid input, such as missing required fields, an invalid voice name, or a proxy connection failure.
     * `404 Not Found`: If the endpoint path is incorrect.
     * `500 Internal Server Error`: If there's an issue on the server-side during audio generation or with the Gemini API client setup.
     * `502 Bad Gateway`: If the API encounters an error while communicating with the upstream Gemini API.
