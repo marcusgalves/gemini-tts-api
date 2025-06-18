@@ -1,5 +1,3 @@
-# main.py
-
 import base64
 import io
 import mimetypes
@@ -91,15 +89,31 @@ def generate_audio_from_gemini(
             types.Content(role="user", parts=[types.Part.from_text(text=text)]),
         ]
 
+        # **CORREÇÃO 1: Usar os safety_settings como objetos types.SafetySetting**
         safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"},
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
         ]
 
-        # **NOVA ALTERAÇÃO: Constrói o SpeechConfig dinamicamente**
+        # **CORREÇÃO 2: Constrói o SpeechConfig dinamicamente**
         speech_config_args = {
             "voice_config": types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
@@ -110,9 +124,10 @@ def generate_audio_from_gemini(
         
         speech_config = types.SpeechConfig(**speech_config_args)
 
+        # **CORREÇÃO 3: Usar ResponseModality enum**
         generate_content_config = types.GenerateContentConfig(
             temperature=temperature,
-            response_modalities=["audio"],
+            response_modalities=[types.ResponseModality.AUDIO],
             speech_config=speech_config,
             safety_settings=safety_settings
         )
@@ -120,27 +135,48 @@ def generate_audio_from_gemini(
         raw_audio_chunks = []
         source_mime_type = None
 
-        for chunk in client.models.generate_content_stream(
-            model=model_name,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if (
-                chunk.candidates is None
-                or not chunk.candidates[0].content
-                or not chunk.candidates[0].content.parts
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=model_name,
+                contents=contents,
+                config=generate_content_config,
             ):
-                continue
+                if (
+                    chunk.candidates is None
+                    or not chunk.candidates[0].content
+                    or not chunk.candidates[0].content.parts
+                ):
+                    continue
 
-            part = chunk.candidates[0].content.parts[0]
-            if part.inline_data and part.inline_data.data:
-                raw_audio_chunks.append(part.inline_data.data)
-                if source_mime_type is None:
-                    source_mime_type = part.inline_data.mime_type
+                part = chunk.candidates[0].content.parts[0]
+                if part.inline_data and part.inline_data.data:
+                    raw_audio_chunks.append(part.inline_data.data)
+                    if source_mime_type is None:
+                        source_mime_type = part.inline_data.mime_type
+        except Exception as api_error:
+            # **CORREÇÃO 4: Capturar e retornar erros específicos da API Gemini**
+            print(f"Erro específico da API Gemini: {api_error}")
+            error_msg = str(api_error)
+            
+            # Verificar se é um erro de autenticação
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                raise HTTPException(status_code=401, detail=f"Erro de autenticação na API Gemini: {error_msg}")
+            # Verificar se é um erro de quota/limite
+            elif "429" in error_msg or "quota" in error_msg.lower() or "rate limit" in error_msg.lower():
+                raise HTTPException(status_code=429, detail=f"Limite de quota/rate limit da API Gemini: {error_msg}")
+            # Verificar se é um erro de modelo não encontrado
+            elif "404" in error_msg or "not found" in error_msg.lower():
+                raise HTTPException(status_code=404, detail=f"Modelo não encontrado na API Gemini: {error_msg}")
+            # Outros erros da API
+            else:
+                raise HTTPException(status_code=502, detail=f"Erro da API Gemini: {error_msg}")
 
     except httpx.ProxyError as e:
         print(f"Falha na conexão com o proxy: {e}")
         raise HTTPException(status_code=400, detail=f"Falha ao conectar ao proxy '{proxy_url}'. Verifique o URL e a disponibilidade do proxy. Erro: {e}")
+    except HTTPException:
+        # Re-raise HTTPExceptions para não mascarar os erros específicos
+        raise
     except Exception as e:
         print(f"Erro durante a chamada à API Gemini: {e}")
         raise HTTPException(status_code=502, detail=f"Erro na comunicação com a API Gemini: {e}")
@@ -179,7 +215,7 @@ def generate_audio_from_gemini(
 app = FastAPI(
     title="API de Geração de Áudio com Gemini",
     description="Esta API permite gerar áudio a partir de texto usando o modelo Gemini TTS e converter áudio Base64 para WAV.",
-    version="1.5.0"  # Versão incrementada
+    version="1.5.1"
 )
 
 VOICES = [
@@ -205,7 +241,6 @@ async def get_voices_endpoint():
     """Retorna a lista de vozes disponíveis."""
     return VOICES
 
-# **NOVA ALTERAÇÃO: Adicionado language_code**
 class GenerateBodyParams(BaseModel):
     text: str = Body(..., description="O texto a ser convertido em áudio.", example="Olá! Esse aqui é um teste de geração de voz em português brasileiro!")
     voice: str = Body(..., description="O nome da voz a ser usada.", example="Zephyr")
@@ -247,7 +282,7 @@ async def generate_audio_endpoint(
             api_key=api_key_from_query,
             text=body_params.text,
             voice=body_params.voice,
-            language_code=body_params.language_code, # Parâmetro adicionado
+            language_code=body_params.language_code,
             temperature=body_params.temperature,
             model_name=body_params.model,
             proxy_url=proxy_url
